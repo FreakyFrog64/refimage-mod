@@ -17,47 +17,60 @@ import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import org.joml.Matrix4f;
 
 /**
- * Draws the reference image as a plane anchored in world space (not screen
- * space), so it moves with the world like Litematica's ghost-block preview.
+ * Draws every visible reference image as a plane anchored in world space
+ * (not screen space), so each one moves with the world like Litematica's
+ * ghost-block preview.
  *
  * Uses RenderType.entityTranslucentEmissive: translucent + full-bright
  * (ignores block/sky lighting, so the image's real colors always show), but
  * still depth-tested against the world, so blocks in front of it occlude it
  * normally — it is NOT an x-ray overlay.
  *
- * The quad is drawn twice with opposite winding/normals so it's visible
+ * Rendered at AFTER_WEATHER (late in the pipeline, after clouds/particles)
+ * so clouds don't paint over it — AFTER_TRANSLUCENT_BLOCKS (the earlier
+ * stage this used at first) draws before clouds do, which is why they
+ * showed up in front.
+ *
+ * Each quad is drawn twice with opposite winding/normals so it's visible
  * from both sides regardless of GPU backface culling.
  */
 @EventBusSubscriber(modid = RefImageMod.MODID, value = Dist.CLIENT)
 public class RefImageRenderer {
 
+    private static final RenderLevelStageEvent.Stage RENDER_STAGE = RenderLevelStageEvent.Stage.AFTER_WEATHER;
+
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) {
+        if (event.getStage() != RENDER_STAGE) {
             return;
         }
-        if (!ReferenceImageState.visible || ReferenceImageState.textureId == null) {
+        ReferenceImageManager.ensureLoaded();
+        if (ReferenceImageManager.isEmpty()) {
             return;
         }
 
         PoseStack poseStack = event.getPoseStack();
         Vec3 camPos = event.getCamera().getPosition();
-
-        poseStack.pushPose();
-        poseStack.translate(
-                ReferenceImageState.x - camPos.x,
-                ReferenceImageState.y - camPos.y,
-                ReferenceImageState.z - camPos.z
-        );
-        poseStack.mulPose(Axis.YP.rotationDegrees(ReferenceImageState.yaw));
-        poseStack.mulPose(Axis.XP.rotationDegrees(ReferenceImageState.pitch));
-
-        float halfWidth = ReferenceImageState.width / 2f;
-        float height = ReferenceImageState.height;
-        float alpha = ReferenceImageState.opacity;
-
         MultiBufferSource.BufferSource bufferSource = Minecraft.getInstance().renderBuffers().bufferSource();
-        RenderType renderType = RenderType.entityTranslucentEmissive(ReferenceImageState.textureId);
+
+        for (ReferenceImage img : ReferenceImageManager.all()) {
+            if (!img.visible || img.textureId == null) continue;
+            renderOne(img, poseStack, camPos, bufferSource);
+        }
+    }
+
+    private static void renderOne(ReferenceImage img, PoseStack poseStack, Vec3 camPos,
+                                   MultiBufferSource.BufferSource bufferSource) {
+        poseStack.pushPose();
+        poseStack.translate(img.x - camPos.x, img.y - camPos.y, img.z - camPos.z);
+        poseStack.mulPose(Axis.YP.rotationDegrees(img.yaw));
+        poseStack.mulPose(Axis.XP.rotationDegrees(img.pitch));
+
+        float halfWidth = img.width / 2f;
+        float height = img.height;
+        float alpha = img.opacity;
+
+        RenderType renderType = RenderType.entityTranslucentEmissive(img.textureId);
         VertexConsumer consumer = bufferSource.getBuffer(renderType);
         Matrix4f mat = poseStack.last().pose();
         int light = LightTexture.FULL_BRIGHT;
@@ -68,7 +81,7 @@ public class RefImageRenderer {
         vertex(consumer, poseStack, mat, halfWidth, height, 1, 0, alpha, light, 0, 0, 1);
         vertex(consumer, poseStack, mat, halfWidth, 0, 1, 1, alpha, light, 0, 0, 1);
 
-        // Back face (normal -Z, reversed winding so it faces the other way)
+        // Back face (normal -Z, reversed winding)
         vertex(consumer, poseStack, mat, halfWidth, 0, 1, 1, alpha, light, 0, 0, -1);
         vertex(consumer, poseStack, mat, halfWidth, height, 1, 0, alpha, light, 0, 0, -1);
         vertex(consumer, poseStack, mat, -halfWidth, height, 0, 0, alpha, light, 0, 0, -1);

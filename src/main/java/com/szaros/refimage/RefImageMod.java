@@ -1,6 +1,8 @@
 package com.szaros.refimage;
 
 import net.neoforged.fml.common.Mod;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Entry point. Everything this mod does is client-side (rendering + client
@@ -11,4 +13,5 @@ import net.neoforged.fml.common.Mod;
 @Mod(RefImageMod.MODID)
 public class RefImageMod {
     public static final String MODID = "refimage";
+    public static final Logger LOGGER = LoggerFactory.getLogger(MODID);
 }
