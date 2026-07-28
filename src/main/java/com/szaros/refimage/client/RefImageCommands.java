@@ -18,24 +18,22 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 
 /**
- * All commands live under /refimg. Every image gets an auto id (img1,
- * img2, ...). Commands that don't take an id (pos, here, size, rotate,
- * opacity, toggle, remove, info) act on the "active" image — whichever
- * was loaded or /refimg select'ed most recently.
+ * All commands live under /refimg. v3: no more "active image" / select —
+ * every command that touches an image takes its name (img1, img2, ...) as
+ * an explicit trailing argument.
  *
- *   /refimg load <url>              - download + show an image, becomes active
- *   /refimg loadfile <path>         - load a local file instead, becomes active
- *   /refimg list                    - list all loaded images
- *   /refimg select <id>             - make an image active
- *   /refimg pos <x> <y> <z>         - move the active image (~ relative coords OK)
- *   /refimg here                    - place it at your feet, facing your direction
- *   /refimg size <width> <height>   - resize in blocks (can stretch)
- *   /refimg size <width>            - resize keeping the image's aspect ratio
- *   /refimg rotate <yaw> <pitch>    - orient it (pitch 90 = lie flat)
- *   /refimg opacity <0-100>         - set translucency
- *   /refimg toggle                  - show/hide without unloading
- *   /refimg remove [id]             - unload (active image, or a specific id)
- *   /refimg info                    - print the active image's settings
+ *   /refimg load <url>                    - download + show an image, reports its name
+ *   /refimg loadfile <path>               - load a local file instead
+ *   /refimg list                          - list all loaded images and their names
+ *   /refimg pos <x> <y> <z> <name>        - move it (~ relative coords OK)
+ *   /refimg here <name>                   - place at your feet, yaw snapped to 0/90/180/270, pitch reset to 0
+ *   /refimg size <width> <length> <name>  - resize in blocks, can stretch
+ *   /refimg scale <width> <name>          - resize in blocks, keeping aspect ratio
+ *   /refimg rotate <yaw> <pitch> <name>   - orient it (pitch 90 = lie flat)
+ *   /refimg opacity <0-100> <name>        - set translucency
+ *   /refimg toggle <name>                 - show/hide without unloading
+ *   /refimg remove <name>                 - unload and free the texture
+ *   /refimg info <name>                   - print current settings
  */
 @EventBusSubscriber(modid = RefImageMod.MODID, value = Dist.CLIENT)
 public class RefImageCommands {
@@ -53,38 +51,52 @@ public class RefImageCommands {
                                 .executes(ctx -> loadFile(ctx, StringArgumentType.getString(ctx, "path")))))
                 .then(Commands.literal("list")
                         .executes(RefImageCommands::list))
-                .then(Commands.literal("select")
-                        .then(Commands.argument("id", StringArgumentType.word())
-                                .executes(ctx -> select(ctx, StringArgumentType.getString(ctx, "id")))))
                 .then(Commands.literal("pos")
                         .then(Commands.argument("position", Vec3Argument.vec3())
-                                .executes(ctx -> setPos(ctx, Vec3Argument.getVec3(ctx, "position")))))
+                                .then(Commands.argument("name", StringArgumentType.word())
+                                        .executes(ctx -> setPos(ctx,
+                                                Vec3Argument.getVec3(ctx, "position"),
+                                                StringArgumentType.getString(ctx, "name"))))))
                 .then(Commands.literal("here")
-                        .executes(RefImageCommands::placeHere))
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .executes(ctx -> placeHere(ctx, StringArgumentType.getString(ctx, "name")))))
                 .then(Commands.literal("size")
                         .then(Commands.argument("width", FloatArgumentType.floatArg(0.1f))
-                                .executes(ctx -> setSizeKeepAspect(ctx, FloatArgumentType.getFloat(ctx, "width")))
-                                .then(Commands.argument("height", FloatArgumentType.floatArg(0.1f))
-                                        .executes(ctx -> setSize(ctx,
+                                .then(Commands.argument("length", FloatArgumentType.floatArg(0.1f))
+                                        .then(Commands.argument("name", StringArgumentType.word())
+                                                .executes(ctx -> setSize(ctx,
+                                                        FloatArgumentType.getFloat(ctx, "width"),
+                                                        FloatArgumentType.getFloat(ctx, "length"),
+                                                        StringArgumentType.getString(ctx, "name")))))))
+                .then(Commands.literal("scale")
+                        .then(Commands.argument("width", FloatArgumentType.floatArg(0.1f))
+                                .then(Commands.argument("name", StringArgumentType.word())
+                                        .executes(ctx -> setScale(ctx,
                                                 FloatArgumentType.getFloat(ctx, "width"),
-                                                FloatArgumentType.getFloat(ctx, "height"))))))
+                                                StringArgumentType.getString(ctx, "name"))))))
                 .then(Commands.literal("rotate")
                         .then(Commands.argument("yaw", FloatArgumentType.floatArg())
                                 .then(Commands.argument("pitch", FloatArgumentType.floatArg())
-                                        .executes(ctx -> setRotation(ctx,
-                                                FloatArgumentType.getFloat(ctx, "yaw"),
-                                                FloatArgumentType.getFloat(ctx, "pitch"))))))
+                                        .then(Commands.argument("name", StringArgumentType.word())
+                                                .executes(ctx -> setRotation(ctx,
+                                                        FloatArgumentType.getFloat(ctx, "yaw"),
+                                                        FloatArgumentType.getFloat(ctx, "pitch"),
+                                                        StringArgumentType.getString(ctx, "name")))))))
                 .then(Commands.literal("opacity")
                         .then(Commands.argument("percent", IntegerArgumentType.integer(0, 100))
-                                .executes(ctx -> setOpacity(ctx, IntegerArgumentType.getInteger(ctx, "percent")))))
+                                .then(Commands.argument("name", StringArgumentType.word())
+                                        .executes(ctx -> setOpacity(ctx,
+                                                IntegerArgumentType.getInteger(ctx, "percent"),
+                                                StringArgumentType.getString(ctx, "name"))))))
                 .then(Commands.literal("toggle")
-                        .executes(RefImageCommands::toggle))
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .executes(ctx -> toggle(ctx, StringArgumentType.getString(ctx, "name")))))
                 .then(Commands.literal("remove")
-                        .executes(RefImageCommands::removeActive)
-                        .then(Commands.argument("id", StringArgumentType.word())
-                                .executes(ctx -> removeById(ctx, StringArgumentType.getString(ctx, "id")))))
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))))
                 .then(Commands.literal("info")
-                        .executes(RefImageCommands::info))
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .executes(ctx -> info(ctx, StringArgumentType.getString(ctx, "name")))))
         );
     }
 
@@ -100,7 +112,7 @@ public class RefImageCommands {
                     img.applyPixelSize(result.width(), result.height(), 4f);
                     img.visible = true;
                     ReferenceImageManager.save();
-                    msg(ctx, id + " loaded and selected. Try /refimg here.");
+                    msg(ctx, id + " loaded. Try /refimg here " + id);
                 },
                 error -> {
                     ReferenceImageManager.remove(id);
@@ -121,7 +133,7 @@ public class RefImageCommands {
                     img.applyPixelSize(result.width(), result.height(), 4f);
                     img.visible = true;
                     ReferenceImageManager.save();
-                    msg(ctx, id + " loaded and selected. Try /refimg here.");
+                    msg(ctx, id + " loaded. Try /refimg here " + id);
                 },
                 error -> {
                     ReferenceImageManager.remove(id);
@@ -136,24 +148,13 @@ public class RefImageCommands {
             return 1;
         }
         for (ReferenceImage img : ReferenceImageManager.all()) {
-            boolean active = img.id.equals(ReferenceImageManager.getActiveId());
-            msg(ctx, (active ? "* " : "  ") + img.id + " - " + (img.visible ? "visible" : "hidden")
-                    + " - " + img.source);
+            msg(ctx, img.id + " - " + (img.visible ? "visible" : "hidden") + " - " + img.source);
         }
         return 1;
     }
 
-    private static int select(CommandContext<CommandSourceStack> ctx, String id) {
-        if (!ReferenceImageManager.select(id)) {
-            msg(ctx, "No image named " + id + ". Use /refimg list to see loaded images.");
-            return 0;
-        }
-        msg(ctx, id + " selected.");
-        return 1;
-    }
-
-    private static int setPos(CommandContext<CommandSourceStack> ctx, Vec3 pos) {
-        ReferenceImage img = active(ctx);
+    private static int setPos(CommandContext<CommandSourceStack> ctx, Vec3 pos, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         img.x = pos.x;
         img.y = pos.y;
@@ -163,44 +164,52 @@ public class RefImageCommands {
         return 1;
     }
 
-    private static int placeHere(CommandContext<CommandSourceStack> ctx) {
-        ReferenceImage img = active(ctx);
+    private static int placeHere(CommandContext<CommandSourceStack> ctx, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) return 0;
+
         Vec3 pos = player.position();
         img.x = pos.x;
         img.y = pos.y;
         img.z = pos.z;
-        img.yaw = player.getYRot();
+
+        // Snap to the nearest cardinal direction (0/90/180/270) — fine-tuning
+        // beyond that is what /refimg rotate is for. Pitch resets to level.
+        float rounded = Math.round(player.getYRot() / 90f) * 90f;
+        rounded = ((rounded % 360f) + 360f) % 360f;
+        img.yaw = rounded;
+        img.pitch = 0f;
+
         ReferenceImageManager.save();
-        msg(ctx, img.id + " placed at your position, facing your current direction.");
+        msg(ctx, String.format("%s placed at your position, facing %.0f°.", img.id, img.yaw));
         return 1;
     }
 
-    private static int setSize(CommandContext<CommandSourceStack> ctx, float width, float height) {
-        ReferenceImage img = active(ctx);
+    private static int setSize(CommandContext<CommandSourceStack> ctx, float width, float length, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         img.width = width;
-        img.height = height;
+        img.height = length;
         ReferenceImageManager.save();
-        msg(ctx, String.format("%s size set to %.2f x %.2f blocks", img.id, width, height));
+        msg(ctx, String.format("%s size set to %.2f x %.2f blocks", img.id, width, length));
         return 1;
     }
 
-    private static int setSizeKeepAspect(CommandContext<CommandSourceStack> ctx, float width) {
-        ReferenceImage img = active(ctx);
+    private static int setScale(CommandContext<CommandSourceStack> ctx, float width, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         float aspect = img.pixelWidth / (float) img.pixelHeight;
         img.width = width;
         img.height = width / aspect;
         ReferenceImageManager.save();
-        msg(ctx, String.format("%s size set to %.2f x %.2f blocks (aspect kept)", img.id, img.width, img.height));
+        msg(ctx, String.format("%s scaled to %.2f x %.2f blocks", img.id, img.width, img.height));
         return 1;
     }
 
-    private static int setRotation(CommandContext<CommandSourceStack> ctx, float yaw, float pitch) {
-        ReferenceImage img = active(ctx);
+    private static int setRotation(CommandContext<CommandSourceStack> ctx, float yaw, float pitch, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         img.yaw = yaw;
         img.pitch = pitch;
@@ -209,8 +218,8 @@ public class RefImageCommands {
         return 1;
     }
 
-    private static int setOpacity(CommandContext<CommandSourceStack> ctx, int percent) {
-        ReferenceImage img = active(ctx);
+    private static int setOpacity(CommandContext<CommandSourceStack> ctx, int percent, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         img.opacity = percent / 100f;
         ReferenceImageManager.save();
@@ -218,8 +227,8 @@ public class RefImageCommands {
         return 1;
     }
 
-    private static int toggle(CommandContext<CommandSourceStack> ctx) {
-        ReferenceImage img = active(ctx);
+    private static int toggle(CommandContext<CommandSourceStack> ctx, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         img.visible = !img.visible;
         ReferenceImageManager.save();
@@ -227,26 +236,16 @@ public class RefImageCommands {
         return 1;
     }
 
-    private static int removeActive(CommandContext<CommandSourceStack> ctx) {
-        ReferenceImage img = active(ctx);
+    private static int remove(CommandContext<CommandSourceStack> ctx, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
-        ReferenceImageManager.remove(img.id);
-        msg(ctx, img.id + " removed.");
+        ReferenceImageManager.remove(name);
+        msg(ctx, name + " removed.");
         return 1;
     }
 
-    private static int removeById(CommandContext<CommandSourceStack> ctx, String id) {
-        if (ReferenceImageManager.get(id) == null) {
-            msg(ctx, "No image named " + id);
-            return 0;
-        }
-        ReferenceImageManager.remove(id);
-        msg(ctx, id + " removed.");
-        return 1;
-    }
-
-    private static int info(CommandContext<CommandSourceStack> ctx) {
-        ReferenceImage img = active(ctx);
+    private static int info(CommandContext<CommandSourceStack> ctx, String name) {
+        ReferenceImage img = require(ctx, name);
         if (img == null) return 0;
         msg(ctx, String.format(
                 "%s: visible=%s pos=(%.2f, %.2f, %.2f) size=%.2fx%.2f yaw=%.1f pitch=%.1f opacity=%d%% source=%s",
@@ -255,10 +254,10 @@ public class RefImageCommands {
         return 1;
     }
 
-    private static ReferenceImage active(CommandContext<CommandSourceStack> ctx) {
-        ReferenceImage img = ReferenceImageManager.getActive();
+    private static ReferenceImage require(CommandContext<CommandSourceStack> ctx, String name) {
+        ReferenceImage img = ReferenceImageManager.get(name);
         if (img == null) {
-            msg(ctx, "No image selected. Use /refimg load <url> first.");
+            msg(ctx, "No image named " + name + ". Use /refimg list to see loaded images.");
         }
         return img;
     }

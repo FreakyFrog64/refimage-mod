@@ -18,9 +18,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
- * Tracks every loaded reference image (keyed by an auto-generated id like
- * "img1") and which one is "active" — the one that /refimg pos, here, size,
- * rotate, opacity, toggle and remove act on when no id is given.
+ * Tracks every loaded reference image, keyed by an auto-generated id like
+ * "img1". There's no "active image" concept (v3) — every command that acts
+ * on an image takes its name as an explicit argument.
  *
  * Also saves/loads to config/refimage-mod.json so images survive relogs and
  * full game restarts. Textures themselves aren't saved (can't serialize a
@@ -32,7 +32,6 @@ public class ReferenceImageManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Map<String, ReferenceImage> IMAGES = new LinkedHashMap<>();
     private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
-    private static String activeId = null;
     private static boolean loaded = false;
 
     private ReferenceImageManager() {}
@@ -51,35 +50,17 @@ public class ReferenceImageManager {
     public static ReferenceImage create(String id) {
         ReferenceImage img = new ReferenceImage(id);
         IMAGES.put(id, img);
-        activeId = id;
         return img;
-    }
-
-    public static ReferenceImage getActive() {
-        return activeId == null ? null : IMAGES.get(activeId);
-    }
-
-    public static String getActiveId() {
-        return activeId;
     }
 
     public static ReferenceImage get(String id) {
         return IMAGES.get(id);
     }
 
-    public static boolean select(String id) {
-        if (!IMAGES.containsKey(id)) return false;
-        activeId = id;
-        return true;
-    }
-
     public static void remove(String id) {
         ReferenceImage img = IMAGES.remove(id);
         if (img != null && img.textureId != null) {
             Minecraft.getInstance().getTextureManager().release(img.textureId);
-        }
-        if (id.equals(activeId)) {
-            activeId = IMAGES.isEmpty() ? null : IMAGES.keySet().iterator().next();
         }
         save();
     }
@@ -107,7 +88,6 @@ public class ReferenceImageManager {
                 entries.add(SavedEntry.from(img));
             }
             SavedFile file = new SavedFile();
-            file.activeId = activeId;
             file.nextId = NEXT_ID.get();
             file.images = entries;
             Files.writeString(path, GSON.toJson(file), StandardCharsets.UTF_8);
@@ -128,11 +108,6 @@ public class ReferenceImageManager {
                 ReferenceImage img = entry.toReferenceImage();
                 IMAGES.put(img.id, img);
                 reload(img);
-            }
-            if (file.activeId != null && IMAGES.containsKey(file.activeId)) {
-                activeId = file.activeId;
-            } else if (!IMAGES.isEmpty()) {
-                activeId = IMAGES.keySet().iterator().next();
             }
             if (file.nextId > NEXT_ID.get()) {
                 NEXT_ID.set(file.nextId);
@@ -160,7 +135,6 @@ public class ReferenceImageManager {
     }
 
     private static class SavedFile {
-        String activeId;
         int nextId = 1;
         List<SavedEntry> images;
     }
