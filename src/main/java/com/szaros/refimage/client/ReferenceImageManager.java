@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.szaros.refimage.RefImageMod;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.world.level.storage.LevelResource;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -13,19 +15,23 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
  * Tracks every loaded reference image, keyed by an auto-generated id like
- * "img1". There's no "active image" concept (v3) — every command that acts
- * on an image takes its name as an explicit argument.
+ * "img1". There's no "active image" concept — every command that acts on
+ * an image takes its name as an explicit argument.
  *
- * Also saves/loads to config/refimage-mod.json so images survive relogs and
- * full game restarts. Textures themselves aren't saved (can't serialize a
- * GPU handle) — instead the source URL/file path is saved and the image is
- * re-downloaded/re-read in the background next time the game starts.
+ * Images are scoped per world/server: each singleplayer save and each
+ * multiplayer server address gets its own config/refimage-mod/<key>.json,
+ * so images loaded in one world don't show up in another. ensureLoaded()
+ * is called every render frame (cheap — it's a string comparison in the
+ * common case) and reloads automatically whenever the detected world/server
+ * key changes, so switching worlds "just works" without needing to hook
+ * join/leave events directly.
  */
 public class ReferenceImageManager {
 
@@ -33,12 +39,17 @@ public class ReferenceImageManager {
     private static final Map<String, ReferenceImage> IMAGES = new LinkedHashMap<>();
     private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
     private static boolean loaded = false;
+    private static String loadedWorldKey = null;
 
     private ReferenceImageManager() {}
 
-    /** Loads saved images from disk. Safe to call repeatedly — only does anything once per game session. */
+    /** Loads (or reloads, if the world/server changed) images for whichever world you're currently in. */
     public static synchronized void ensureLoaded() {
-        if (loaded) return;
+        String key = currentWorldKey();
+        if (loaded && key.equals(loadedWorldKey)) return;
+
+        clearInMemory();
+        loadedWorldKey = key;
         loaded = true;
         loadFromDisk();
     }
@@ -73,10 +84,55 @@ public class ReferenceImageManager {
         return IMAGES.isEmpty();
     }
 
+    private static void clearInMemory() {
+        for (ReferenceImage img : IMAGES.values()) {
+            if (img.textureId != null) {
+                Minecraft.getInstance().getTextureManager().release(img.textureId);
+            }
+        }
+        IMAGES.clear();
+        NEXT_ID.set(1);
+    }
+
+    // ---- per-world identification ----
+
+    /**
+     * A stable-ish key for "which world/server am I in right now":
+     * "sp_<save folder name>" for singleplayer/LAN, "mp_<server address>"
+     * for multiplayer. This is the part I'm least certain compiles cleanly
+     * as-is (getWorldPath/LevelResource specifically) — if it doesn't,
+     * the fallback below (world display name) is the easy substitute.
+     */
+    private static String currentWorldKey() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getSingleplayerServer() != null) {
+            try {
+                String folderName = mc.getSingleplayerServer()
+                        .getWorldPath(LevelResource.ROOT)
+                        .getFileName()
+                        .toString();
+                return sanitize("sp_" + folderName);
+            } catch (Exception e) {
+                return "sp_unknown";
+            }
+        }
+        ServerData server = mc.getCurrentServer();
+        if (server != null && server.ip != null) {
+            return sanitize("mp_" + server.ip.toLowerCase(Locale.ROOT));
+        }
+        return "unknown";
+    }
+
+    private static String sanitize(String key) {
+        return key.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
     // ---- persistence ----
 
     private static Path configPath() {
-        return Minecraft.getInstance().gameDirectory.toPath().resolve("config").resolve("refimage-mod.json");
+        String key = loadedWorldKey != null ? loadedWorldKey : currentWorldKey();
+        return Minecraft.getInstance().gameDirectory.toPath()
+                .resolve("config").resolve("refimage-mod").resolve(key + ".json");
     }
 
     public static void save() {
@@ -92,7 +148,7 @@ public class ReferenceImageManager {
             file.images = entries;
             Files.writeString(path, GSON.toJson(file), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            RefImageMod.LOGGER.error("Failed to save refimage-mod.json", e);
+            RefImageMod.LOGGER.error("Failed to save refimage-mod config", e);
         }
     }
 
@@ -113,7 +169,7 @@ public class ReferenceImageManager {
                 NEXT_ID.set(file.nextId);
             }
         } catch (Exception e) {
-            RefImageMod.LOGGER.error("Failed to load refimage-mod.json", e);
+            RefImageMod.LOGGER.error("Failed to load refimage-mod config", e);
         }
     }
 
